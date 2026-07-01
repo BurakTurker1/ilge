@@ -1,39 +1,99 @@
 services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: ilge-nginx
+    restart: always
+    depends_on:
+      nextjs:
+        condition: service_healthy
+    volumes:
+      - ./docker/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    networks:
+      - ilge-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   nextjs:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SITE_URL: https://ilge.burakturker.io
+        NEXT_PUBLIC_APP_DOMAIN: ilge.burakturker.io
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+        NEXT_PUBLIC_MAPBOX_TOKEN: ${NEXT_PUBLIC_MAPBOX_TOKEN:-}
     container_name: ilge-nextjs
+    restart: always
     env_file:
-      - .env.example
+      - .env.local
     environment:
-      DATABASE_URL: postgresql://ilge:ilge_password@postgres:5432/ilge
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PNPM_IGNORE_SCRIPTS: "false"
+      DATABASE_URL: postgresql://ilge:${POSTGRES_PASSWORD:-ilge_password}@postgis:5432/ilge
       REDIS_URL: redis://redis:6379
       MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: https://ilge.burakturker.io
     depends_on:
-      postgres:
+      postgis:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
     expose:
       - "3000"
+    networks:
+      - ilge-network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
 
-  postgres:
+  postgis:
     image: postgis/postgis:16-3.4
     container_name: ilge-postgis
+    restart: always
     environment:
       POSTGRES_DB: ilge
       POSTGRES_USER: ilge
-      POSTGRES_PASSWORD: ilge_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ilge_password}
     volumes:
-      - ilge-postgres-data:/var/lib/postgresql/data
+      - ilge-postgis-data:/var/lib/postgresql/data
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     ports:
       - "5432:5432"
+    networks:
+      - ilge-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ilge -d ilge"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ilge-redis
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - ilge-redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - ilge-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 8
@@ -41,33 +101,33 @@ services:
   minio:
     image: minio/minio:latest
     container_name: ilge-minio
+    restart: always
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ilge
-      MINIO_ROOT_PASSWORD: ilge_password
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-ilge}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-ilge_password}
+      MINIO_BROWSER_REDIRECT_URL: https://ilge.burakturker.io/minio
+      MINIO_SERVER_URL: https://ilge.burakturker.io
     volumes:
       - ilge-minio-data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
+    networks:
+      - ilge-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
 
-  redis:
-    image: redis:7-alpine
-    container_name: ilge-redis
-    command: redis-server --save "" --appendonly no
-    ports:
-      - "6379:6379"
-
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: ilge-nginx
-    depends_on:
-      - nextjs
-    volumes:
-      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    ports:
-      - "8080:80"
+networks:
+  ilge-network:
+    name: ilge-network
+    driver: bridge
 
 volumes:
-  ilge-postgres-data:
+  ilge-postgis-data:
+  ilge-redis-data:
   ilge-minio-data:
